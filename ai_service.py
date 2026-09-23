@@ -1,13 +1,23 @@
 """Optional AI interviewer and a clearly labelled offline fallback."""
 import json
+import logging
 import os
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from i18n import field_question
 from scoring import FIELDS, KEYS, informative
 
 CARD_KEYS = ['title'] + KEYS
+LOGGER = logging.getLogger(__name__)
+
+
+class _OutputValidationError(ValueError):
+    """Carry a fixed diagnostic code without exposing model or user content."""
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
 
 SCHEMA = {
     'type': 'object', 'additionalProperties': False, 'required': ['card', 'questions'],
@@ -55,28 +65,28 @@ def local_interview(original: str, theme: str, lang: str = 'ru') -> dict:
 
 def validate_output(payload, original: str) -> dict:
     if not isinstance(payload, dict) or set(payload) != {'card', 'questions'}:
-        raise ValueError('Неверная структура AI-ответа.')
+        raise _OutputValidationError('payload_schema', 'Неверная структура AI-ответа.')
     card, questions = payload['card'], payload['questions']
     if not isinstance(card, dict) or set(card) != set(CARD_KEYS):
-        raise ValueError('AI вернул неполную схему карточки.')
+        raise _OutputValidationError('card_schema', 'AI вернул неполную схему карточки.')
     if any(not isinstance(v, str) or len(v) > 6000 for v in card.values()):
-        raise ValueError('Неверный тип или размер поля.')
-    if len(card['title']) > 140:
-        card['title'] = card['title'][:140]
-    if any(v and v not in original for v in card.values()):
-        raise ValueError('В AI-ответе обнаружено значение вне исходного текста.')
+        raise _OutputValidationError('card_field_type_or_size', 'Неверный тип или размер поля.')
     if not isinstance(questions, list) or not 3 <= len(questions) <= 5:
-        raise ValueError('Нужно от 3 до 5 вопросов.')
+        raise _OutputValidationError('question_count', 'Нужно от 3 до 5 вопросов.')
     seen, question_texts = set(), set()
     for item in questions:
         if (not isinstance(item, dict) or set(item) != {'field', 'question'}
                 or not isinstance(item['field'], str) or item['field'] not in KEYS
                 or item['field'] in seen or not isinstance(item['question'], str)
                 or not 10 <= len(item['question']) <= 800 or item['question'].casefold() in question_texts):
-            raise ValueError('Неверный или повторный уточняющий вопрос.')
+            raise _OutputValidationError('question_invalid_or_duplicate', 'Неверный или повторный уточняющий вопрос.')
         seen.add(item['field'])
         question_texts.add(item['question'].casefold())
-    return payload
+    # Reject only unsupported field content, preserving the valid extraction.
+    # Check the whole title before applying the existing 140-character limit.
+    clean_card = {key: value if value in original else '' for key, value in card.items()}
+    clean_card['title'] = clean_card['title'][:140]
+    return {'card': clean_card, 'questions': questions}
 
 
 def interview(original: str, theme: str, live: bool = False, lang: str = 'ru') -> tuple:
@@ -89,6 +99,7 @@ def interview(original: str, theme: str, live: bool = False, lang: str = 'ru') -
         }.get(lang, 'Локальный демо-режим.')
     key = os.getenv('OPENAI_API_KEY', '').strip()
     if not key:
+        LOGGER.warning('TaskUp AI fallback: reason=missing_api_key')
         return fallback, {
             'ru': 'API-ключ не задан. Использован локальный демо-режим, не реальный AI.',
             'kk': 'API кілті берілмеген. Нақты AI орнына жергілікті демо-режим қолданылды.',
@@ -102,6 +113,7 @@ def interview(original: str, theme: str, live: bool = False, lang: str = 'ru') -
         'text': {'format': {'type': 'json_schema', 'name': 'business_interview',
                             'strict': True, 'schema': SCHEMA}}
     }
+    failure_stage = 'transport'
     try:
         request = Request(
             'https://api.openai.com/v1/responses',
@@ -110,9 +122,12 @@ def interview(original: str, theme: str, live: bool = False, lang: str = 'ru') -
         )
         with urlopen(request, timeout=35) as response:
             raw = response.read(300001)
+        failure_stage = 'response_size'
         if len(raw) > 300000:
             raise ValueError('AI-ответ слишком большой.')
+        failure_stage = 'response_json'
         envelope = json.loads(raw)
+        failure_stage = 'response_envelope'
         if envelope.get('status') != 'completed':
             raise ValueError('AI-ответ не завершён.')
         output = ''.join(
@@ -121,14 +136,23 @@ def interview(original: str, theme: str, live: bool = False, lang: str = 'ru') -
             for part in item.get('content', [])
             if part.get('type') == 'output_text'
         )
-        result = validate_output(json.loads(output), original)
+        failure_stage = 'output_json'
+        payload = json.loads(output)
+        failure_stage = 'output_validation'
+        result = validate_output(payload, original)
         note = {
             'ru': 'OpenAI API: поля извлечены из исходного текста. Проверьте смысл и подтвердите карточку.',
             'kk': 'OpenAI API: өрістер бастапқы мәтіннен алынды. Мағынасын тексеріп, карточканы растаңыз.',
             'en': 'OpenAI API: fields were extracted from the original text. Review and confirm the task card.',
         }.get(lang, 'OpenAI API completed.')
         return result, note
-    except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError, AttributeError):
+    except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        reason = exc.reason if isinstance(exc, _OutputValidationError) else failure_stage
+        status = exc.code if isinstance(exc, HTTPError) and isinstance(exc.code, int) else '-'
+        # Never log the exception message, request/response, headers or traceback:
+        # any of them may contain an API key or private task content.
+        LOGGER.warning('TaskUp AI fallback: reason=%s; error=%s; http_status=%s',
+                       reason, type(exc).__name__, status)
         note = {
             'ru': 'Ошибка API или некорректный ответ. Текст сохранён; включён локальный демо-режим.',
             'kk': 'API қатесі немесе жарамсыз жауап. Мәтін сақталды; жергілікті демо-режим қосылды.',

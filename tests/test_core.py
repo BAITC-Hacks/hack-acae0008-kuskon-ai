@@ -1,11 +1,13 @@
 """Core checks run offline; no Streamlit or real model requests required."""
 import copy
+import io
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 import database as db
 from ai_service import CARD_KEYS, interview, local_interview, validate_output
 from scoring import FIELDS, KEYS, level, score_card
@@ -183,25 +185,103 @@ class CoreTests(unittest.TestCase):
         self.assertIn('демо', note)
 
     def test_real_mode_without_key_falls_back(self):
-        out, note = interview('Нужно автоматизировать учёт заказов', 'Торговля', True)
+        original = 'Нужно автоматизировать учёт заказов'
+        with self.assertLogs('ai_service', level='WARNING') as logs:
+            out, note = interview(original, 'Торговля', True)
         self.assertIn('не задан', note)
         self.assertGreaterEqual(len(out['questions']), 3)
+        self.assertNotIn(original, '\n'.join(logs.output))
+        self.assertIn('missing_api_key', '\n'.join(logs.output))
+        self.assertTrue(all(record.exc_info is None and record.stack_info is None for record in logs.records))
 
-    def test_reject_malformed_or_hallucinated_ai(self):
+    def test_reject_malformed_ai(self):
         original = 'Нужно автоматизировать учёт заказов'
         good = local_interview(original, 'Торговля')
         self.assertEqual(validate_output(copy.deepcopy(good), original), good)
         for bad in [{}, [], dict(good, questions=[]), dict(good, questions=[good['questions'][0]] * 3),
-                    dict(good, card=dict(good['card'], constraints='Бюджет 500000 тенге'))]:
+                    dict(good, card={}), dict(good, card=dict(good['card'], need=123))]:
             with self.subTest(payload=bad):
                 with self.assertRaises(ValueError):
                     validate_output(bad, original)
 
+    def test_ungrounded_fields_are_cleared_without_mutating_input(self):
+        original = 'Нужно автоматизировать учёт заказов. Доступны примеры заявок клиентов.'
+        payload = local_interview(original, 'Торговля')
+        payload['card']['data'] = 'Доступны примеры заявок клиентов.'
+        payload['card']['need'] = 'Нужна интеллектуальная система управления продажами'
+        payload['card']['title'] = 'Выдуманное название'
+        before = copy.deepcopy(payload)
+        result = validate_output(payload, original)
+        self.assertEqual(result['card']['need'], '')
+        self.assertEqual(result['card']['title'], '')
+        self.assertEqual(result['card']['context'], original)
+        self.assertEqual(result['card']['data'], payload['card']['data'])
+        self.assertEqual(result['questions'], payload['questions'])
+        self.assertEqual(payload, before)
+        self.assertIsNot(result, payload)
+        self.assertIsNot(result['card'], payload['card'])
+
+    def test_title_is_quote_validated_before_length_cap(self):
+        original = 'Точный исходный текст о работе магазина и заказах. ' * 5
+        good = local_interview(original, 'Торговля')
+        good['card']['title'] = original[:180]
+        before = copy.deepcopy(good)
+        result = validate_output(good, original)
+        self.assertEqual(result['card']['title'], original[:140])
+        self.assertEqual(good, before)
+        bad = copy.deepcopy(good)
+        bad['card']['title'] = original[:140] + ' НЕСУЩЕСТВУЮЩИЙ СУФФИКС'
+        self.assertEqual(validate_output(bad, original)['card']['title'], '')
+
+    def test_question_validation_remains_strict(self):
+        original = 'Нужно автоматизировать учёт заказов'
+        good = local_interview(original, 'Торговля')
+        cases = {}
+        duplicate_field = copy.deepcopy(good['questions'])
+        duplicate_field[1]['field'] = duplicate_field[0]['field']
+        cases['duplicate_field'] = duplicate_field
+        duplicate_text = copy.deepcopy(good['questions'])
+        duplicate_text[1]['question'] = duplicate_text[0]['question'].upper()
+        cases['duplicate_question'] = duplicate_text
+        invalid_field = copy.deepcopy(good['questions'])
+        invalid_field[0]['field'] = 'nonexistent_field'
+        cases['invalid_field'] = invalid_field
+        bad_schema = copy.deepcopy(good['questions'])
+        bad_schema[0]['extra'] = 'unexpected'
+        cases['item_schema'] = bad_schema
+        cases['too_few'] = copy.deepcopy(good['questions'][:2])
+        cases['too_many'] = [
+            {'field': key, 'question': f'Уточните сведения для поля {key}, пожалуйста.'}
+            for key in KEYS[:6]
+        ]
+        for name, questions in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaises(ValueError):
+                    validate_output(dict(good, questions=questions), original)
+
     def test_api_network_failure_is_labelled(self):
-        with patch.dict(os.environ, {'OPENAI_API_KEY': 'unit-test-not-a-secret'}):
-            with patch('ai_service.urlopen', side_effect=TimeoutError):
-                _, note = interview('Нужно автоматизировать учёт заказов', 'Торговля', True)
+        original = 'Нужно автоматизировать учёт заказов'
+        secret = 'unit-test-sensitive-secret-never-log'
+        message = f'private-provider-body: {secret}; {original}'
+        failures = [
+            TimeoutError(message),
+            HTTPError('https://example.invalid/' + secret, 429, message, None,
+                      io.BytesIO(message.encode('utf-8'))),
+        ]
+        for failure in failures:
+            with self.subTest(error=type(failure).__name__):
+                with patch.dict(os.environ, {'OPENAI_API_KEY': secret}):
+                    with patch('ai_service.urlopen', side_effect=failure):
+                        with self.assertLogs('ai_service', level='WARNING') as logs:
+                            result, note = interview(original, 'Торговля', True)
                 self.assertIn('Ошибка API', note)
+                self.assertEqual(result, local_interview(original, 'Торговля'))
+                logged = '\n'.join(logs.output)
+                self.assertRegex(logged, r'reason=[a-z_]+')
+                self.assertIn(type(failure).__name__, logged)
+                for sensitive in (secret, original, 'private-provider-body', 'Traceback'):
+                    self.assertNotIn(sensitive, logged)
+                self.assertTrue(all(record.exc_info is None and record.stack_info is None for record in logs.records))
 
     def test_api_success_with_mocked_provider(self):
         original = 'Нужно автоматизировать учёт заказов'
@@ -213,6 +293,31 @@ class CoreTests(unittest.TestCase):
                 result, note = interview(original, 'Торговля', True)
                 self.assertEqual(result, out)
                 self.assertIn('OpenAI API', note)
+
+    def test_api_keeps_grounded_fields_when_one_field_is_paraphrased(self):
+        need = 'Нужно автоматизировать учёт заказов.'
+        data = 'Доступны примеры заявок клиентов.'
+        result_quote = 'Команда передаст рабочий прототип.'
+        original = f'{need} {data} {result_quote}'
+        payload = local_interview(original, 'Торговля')
+        payload['card'].update(need='Автоматизировать работу с заказами клиентов.',
+                               data=data, result=result_quote)
+        before = copy.deepcopy(payload)
+        raw = json.dumps({
+            'status': 'completed',
+            'output': [{'content': [{'type': 'output_text', 'text': json.dumps(payload)}]}],
+        }).encode()
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'unit-test-not-a-secret'}):
+            with patch('ai_service.urlopen') as provider:
+                provider.return_value.__enter__.return_value.read.return_value = raw
+                result, note = interview(original, 'Торговля', True)
+        self.assertIn('OpenAI API', note)
+        self.assertNotIn('Ошибка API', note)
+        self.assertEqual(result['card']['need'], '')
+        for field in ('title', 'context', 'data', 'result'):
+            self.assertEqual(result['card'][field], payload['card'][field])
+        self.assertEqual(result['questions'], payload['questions'])
+        self.assertEqual(payload, before)
 
 
 if __name__ == '__main__':
