@@ -1,1 +1,1 @@
-Тестовый запуск для хакатонаgit config --global user.name "Ваше Имя"
+Тестовый запуск для хакатонаgit config --global user.name "Ваше Имя"    .\venv\Scripts\python.exe --version

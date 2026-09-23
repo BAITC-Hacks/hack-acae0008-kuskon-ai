@@ -1,0 +1,36 @@
+TaskUp validation report
+Python: 3.13.5
+Scope: offline business logic and mocked AI contract, not browser E2E.
+Streamlit installation unavailable in preparation environment; real AI not called.
+
+test_api_network_failure_is_labelled (test_core.CoreTests.test_api_network_failure_is_labelled) ... ok
+test_api_success_with_mocked_provider (test_core.CoreTests.test_api_success_with_mocked_provider) ... ok
+test_boundaries (test_core.CoreTests.test_boundaries) ... ok
+test_business_can_reject_all (test_core.CoreTests.test_business_can_reject_all) ... ok
+test_cannot_decide_for_other_business (test_core.CoreTests.test_cannot_decide_for_other_business) ... ok
+test_complete_scenario_and_single_reward (test_core.CoreTests.test_complete_scenario_and_single_reward) ... ok
+test_confirmation_required_for_points (test_core.CoreTests.test_confirmation_required_for_points) ... ok
+test_demo_questions_and_no_invented_facts (test_core.CoreTests.test_demo_questions_and_no_invented_facts) ... ok
+test_draft_cannot_receive_proposals (test_core.CoreTests.test_draft_cannot_receive_proposals) ... ok
+test_link_validation (test_core.CoreTests.test_link_validation) ... ok
+test_no_automatic_or_exclusive_selection (test_core.CoreTests.test_no_automatic_or_exclusive_selection) ... ok
+test_owner_guard (test_core.CoreTests.test_owner_guard) ... ok
+test_pending_team_cannot_submit_progress (test_core.CoreTests.test_pending_team_cannot_submit_progress) ... ok
+test_placeholders_and_duplicates_score_zero (test_core.CoreTests.test_placeholders_and_duplicates_score_zero) ... ok
+test_public_card_requires_title_and_confirmation_on_edit (test_core.CoreTests.test_public_card_requires_title_and_confirmation_on_edit) ... ok
+test_real_mode_without_key_falls_back (test_core.CoreTests.test_real_mode_without_key_falls_back) ... ok
+test_reject_malformed_or_hallucinated_ai (test_core.CoreTests.test_reject_malformed_or_hallucinated_ai) ... ok
+test_repeated_proposals_allowed_but_not_duplicate_reward (test_core.CoreTests.test_repeated_proposals_allowed_but_not_duplicate_reward) ... ok
+test_seed_minimum_and_idempotence (test_core.CoreTests.test_seed_minimum_and_idempotence) ... ok
+test_sorting_and_low_score_visible (test_core.CoreTests.test_sorting_and_low_score_visible) ... ok
+test_unconfirmed_publication_rejected (test_core.CoreTests.test_unconfirmed_publication_rejected) ... ok
+test_vague_success_is_partial (test_core.CoreTests.test_vague_success_is_partial) ... ok
+test_version_lock_and_history (test_core.CoreTests.test_version_lock_and_history) ... ok
+test_weights_total_100 (test_core.CoreTests.test_weights_total_100) ... ok
+test_wrong_role_cannot_create_or_apply (test_core.CoreTests.test_wrong_role_cannot_create_or_apply) ... ok
+test_zero_score_publication_allowed (test_core.CoreTests.test_zero_score_publication_allowed) ... ok
+
+----------------------------------------------------------------------
+Ran 26 tests in 0.109s
+
+OK
