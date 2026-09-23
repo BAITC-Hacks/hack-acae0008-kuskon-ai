@@ -89,8 +89,22 @@ class UIFlowTests(unittest.TestCase):
                 self.assertEqual(self.app.session_state['lang'], lang)
 
     def test_marketplace_filters_survive_detail_and_back(self):
+        self.click('landing_language_en')
         self.enter('team')
-        task = min(db.tasks(published=True), key=lambda item: item['score'])
+        ordered_tasks = db.tasks(published=True)
+
+        def rank_captions():
+            return [item.value for item in self.app.caption
+                    if item.value.startswith('#') and item.value.endswith(' by score')]
+
+        expected_ranks = [f'#{position} of {len(ordered_tasks)} by score'
+                          for position in range(1, len(ordered_tasks) + 1)]
+        self.assertEqual(rank_captions(), expected_ranks)
+        self.assertEqual(
+            [button.key for button in self.app.button if str(button.key).startswith('open_task_')],
+            [f'open_task_{item["id"]}' for item in ordered_tasks],
+        )
+        task = min(ordered_tasks, key=lambda item: item['score'])
         title = task['card']['title']
         self.app.text_input(key='search').set_value(title)
         self.app.selectbox(key='theme_filter').select(task['theme'])
@@ -98,6 +112,7 @@ class UIFlowTests(unittest.TestCase):
         self.assert_healthy()
         open_keys = [button.key for button in self.app.button if str(button.key).startswith('open_task_')]
         self.assertEqual(open_keys, [f'open_task_{task["id"]}'])
+        self.assertEqual(rank_captions(), ['#1 of 1 by score'])
         self.click(open_keys[0])
         self.assertEqual(self.app.session_state['selected_catalog_task'], task['id'])
         self.assertEqual(self.labelled('button', 'send_proposal').disabled, False)
@@ -105,11 +120,13 @@ class UIFlowTests(unittest.TestCase):
         self.assertEqual(self.app.text_input(key='search').value, title)
         self.assertEqual(self.app.selectbox(key='theme_filter').value, task['theme'])
         self.assertEqual(self.app.selectbox(key='readiness_filter').value, level(task['score']))
+        self.assertEqual(rank_captions(), ['#1 of 1 by score'])
         self.app.text_input(key='search').set_value('nonexistent-task-qa-937').run()
         self.click('reset_filters')
         self.assertEqual(self.app.text_input(key='search').value, '')
         self.assertEqual(len([button for button in self.app.button if str(button.key).startswith('open_task_')]),
                          len(db.tasks(published=True)))
+        self.assertEqual(rank_captions(), expected_ranks)
 
     def test_local_interview_publication_proposal_selection_and_milestone(self):
         self.click('landing_language_en')
@@ -152,6 +169,15 @@ class UIFlowTests(unittest.TestCase):
         self.assertTrue(published['published'])
         self.assertEqual(published['score'], 100)
         self.assertEqual(published['version'], 3)
+        self.assertTrue(any('Increase +100.' in message.value for message in self.app.success))
+
+        # Reconfirming unchanged source content must not report a positive gain.
+        self.app.checkbox(key=f'confirm_{task_id}_3').check()
+        self.submit('save_card')
+        published = db.task(task_id)
+        self.assertEqual(published['score'], 100)
+        self.assertEqual(published['version'], 4)
+        self.assertFalse(any('Increase ' in message.value for message in self.app.success))
 
         self.enter('team')
         team = self.app.session_state['team_profile']

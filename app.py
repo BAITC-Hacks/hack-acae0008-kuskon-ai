@@ -16,7 +16,8 @@ from i18n import (
 from scoring import FIELDS, KEYS, THEMES, LEVELS, level, score_card
 from seed_data import seed
 from ui import (
-    brand, display_card_views, icon, page_heading, readiness_badge, task_summary,
+    brand, catalog_rank_label, display_card_views, icon, page_heading, readiness_badge,
+    score_gain_label, task_summary,
     translation_list_notice, translation_notice,
 )
 
@@ -285,8 +286,11 @@ def catalogue(role: str, person: int) -> None:
             st.button(tr(lang, 'reset_filters'), key='reset_filters', on_click=reset_catalog_filters)
 
     for start in range(0, len(filtered), 2):
-        for column, task in zip(st.columns(2, gap='medium'), filtered[start:start + 2]):
+        for position, (column, task) in enumerate(
+            zip(st.columns(2, gap='medium'), filtered[start:start + 2]), start=start + 1,
+        ):
             with column, st.container(border=False, key=f'market_card_{task["id"]}'):
+                st.caption(catalog_rank_label(position, len(filtered), lang))
                 view = views[task['id']]
                 task_summary(task, by_id[task['owner_id']]['name'], lang, display_card=view.card)
                 translation_notice(view, task['card'], lang)
@@ -468,8 +472,10 @@ def constructor(person: int) -> None:
 
         if saved:
             new_score = db.save_card(task['id'], person, task['version'], card, confirm, publish)
+            gain = score_gain_label(task['score'], new_score, lang) if confirm else ''
             finish(
                 tr(lang, 'saved_rating', old=task['score'], new=new_score)
+                + (f' {gain}' if gain else '')
                 + ' '
                 + (tr(lang, 'published_now') if publish or task['published'] else tr(lang, 'not_published'))
             )

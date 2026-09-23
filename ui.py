@@ -9,6 +9,22 @@ from scoring import LEVELS, level
 import translation_service
 
 
+def catalog_rank_label(position: int, total: int, lang: str) -> str:
+    templates = {
+        'ru': '#{position} из {total} по рейтингу',
+        'en': '#{position} of {total} by score',
+        'kk': 'Рейтинг бойынша #{position} / {total}',
+    }
+    return templates.get(lang, templates['ru']).format(position=position, total=total)
+
+
+def score_gain_label(old: int, new: int, lang: str) -> str:
+    if new <= old:
+        return ''
+    labels = {'ru': 'Прирост', 'en': 'Increase', 'kk': 'Өсім'}
+    return f"{labels.get(lang, labels['ru'])} +{new - old}."
+
+
 @dataclass(frozen=True)
 class CardView:
     """An independent display copy, never a card to save or score."""
