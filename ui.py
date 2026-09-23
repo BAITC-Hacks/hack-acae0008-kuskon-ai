@@ -1,10 +1,72 @@
 """Presentation-only HTML helpers. All task/profile text is escaped here."""
 from html import escape
+from dataclasses import dataclass
 
 import streamlit as st
 
-from i18n import level_label, theme_label, tr
+from i18n import field_label, level_label, theme_label, tr
 from scoring import LEVELS, level
+import translation_service
+
+
+@dataclass(frozen=True)
+class CardView:
+    """An independent display copy, never a card to save or score."""
+    card: dict
+    translated_fields: tuple = ()
+    unavailable_fields: tuple = ()
+
+
+def display_card_views(tasks, lang: str, *, fields=None, protected_terms=()) -> dict:
+    tasks = list(tasks)
+    requested = translation_service.TRANSLATABLE_FIELDS if fields is None else fields
+    allowed = tuple(key for key in requested if key in translation_service.TRANSLATABLE_FIELDS)
+    if st.session_state.get('show_original_content', False):
+        return {task['id']: CardView(dict(task['card'])) for task in tasks}
+    texts = [task['card'][key] for task in tasks for key in allowed
+             if isinstance(task['card'].get(key), str) and task['card'][key].strip()]
+    # One batch for the visible fields; subsequent views reuse individual texts.
+    if texts:
+        with st.spinner(tr(lang, 'translation_loading')):
+            translated = translation_service.translate_texts(texts, lang, protected_terms=protected_terms)
+    else:
+        translated = {}
+    views = {}
+    for task in tasks:
+        card = dict(task['card'])
+        changed, unavailable = [], []
+        for key in allowed:
+            original = card.get(key, '')
+            result = translated.get(original)
+            if result is not None:
+                card[key] = result.text
+                if result.translated:
+                    changed.append(key)
+                if result.unavailable:
+                    unavailable.append(key)
+        views[task['id']] = CardView(card, tuple(changed), tuple(unavailable))
+    return views
+
+
+def translation_notice(view: CardView, original: dict, lang: str, *, show_original=True) -> None:
+    if view.translated_fields:
+        st.caption(tr(lang, 'auto_translation'))
+        if show_original:
+            with st.expander(tr(lang, 'show_original')):
+                for key in view.translated_fields:
+                    label = tr(lang, 'title') if key == 'title' else field_label(lang, key)
+                    st.markdown(f'**{label}**')
+                    st.text(original.get(key, ''))
+    if view.unavailable_fields:
+        st.caption(tr(lang, 'translation_unavailable'))
+
+
+def translation_list_notice(views: dict, lang: str) -> None:
+    """Selectors have a shared original switch in the sidebar."""
+    if any(view.translated_fields for view in views.values()):
+        st.caption(tr(lang, 'auto_translation'))
+    if any(view.unavailable_fields for view in views.values()):
+        st.caption(tr(lang, 'translation_unavailable'))
 
 
 def icon(name: str) -> str:
@@ -41,10 +103,12 @@ def readiness_badge(lang: str, score: int) -> str:
     return f'<span class="tu-badge {style}">{escape(level_label(lang, readiness))}</span>'
 
 
-def task_summary(task: dict, company: str, lang: str, *, compact: bool = True) -> None:
-    """Render saved values only; scoring and persistence remain in their modules."""
-    title = task['card'].get('title') or tr(lang, 'need_clarify')
-    result = task['card'].get('result') or tr(lang, 'need_clarify')
+def task_summary(task: dict, company: str, lang: str, *, compact: bool = True,
+                 display_card: dict | None = None) -> None:
+    """Translate copy only; score and identity always come from the saved task."""
+    card = task['card'] if display_card is None else display_card
+    title = card.get('title') or tr(lang, 'need_clarify')
+    result = card.get('result') or tr(lang, 'need_clarify')
     score = task['score']
     initials = ''.join(word[0] for word in company.split()[:2])
     st.markdown(

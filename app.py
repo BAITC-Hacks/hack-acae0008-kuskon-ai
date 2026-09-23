@@ -15,7 +15,10 @@ from i18n import (
 )
 from scoring import FIELDS, KEYS, THEMES, LEVELS, level, score_card
 from seed_data import seed
-from ui import brand, icon, page_heading, readiness_badge, task_summary
+from ui import (
+    brand, display_card_views, icon, page_heading, readiness_badge, task_summary,
+    translation_list_notice, translation_notice,
+)
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / '.env')
@@ -211,11 +214,19 @@ def rating(card: dict, confirmed, preview: bool = False) -> None:
     st.caption(tr(lang, 'score_disclaimer'))
 
 
-def details(task: dict) -> None:
+def card_views(tasks, *, fields=None) -> dict:
+    return display_card_views(
+        tasks, st.session_state['lang'], fields=fields,
+        protected_terms=tuple(profile['name'] for profile in profiles),
+    )
+
+
+def details(task: dict, display_card: dict | None = None) -> None:
     lang = st.session_state['lang']
+    card = task['card'] if display_card is None else display_card
     for key, *_ in FIELDS:
         st.markdown(f"**{field_label(lang, key)}**")
-        st.write(task['card'].get(key) or tr(lang, 'need_clarify'))
+        st.write(card.get(key) or tr(lang, 'need_clarify'))
     st.caption(f"{tr(lang, 'version')} {task['version']} · #{task['id']}")
 
 
@@ -256,7 +267,15 @@ def catalogue(role: str, person: int) -> None:
         t for t in all_tasks
         if (theme == '__all__' or t['theme'] == theme)
         and (readiness == '__all__' or level(t['score']) == readiness)
-        and query.casefold() in ' '.join(t['card'].values()).casefold()
+    ]
+    views = card_views(filtered, fields=('title', 'result'))
+    # A visible translated title/result should also be discoverable by search.
+    # The original fields remain searchable, with the same ordering and levels.
+    filtered = [
+        task for task in filtered
+        if query.casefold() in ' '.join(
+            [*task['card'].values(), *views[task['id']].card.values()]
+        ).casefold()
     ]
     st.markdown(f'**{tr(lang, "results_count", count=len(filtered))}**')
     st.caption(tr(lang, 'catalog_sort'))
@@ -268,7 +287,9 @@ def catalogue(role: str, person: int) -> None:
     for start in range(0, len(filtered), 2):
         for column, task in zip(st.columns(2, gap='medium'), filtered[start:start + 2]):
             with column, st.container(border=False, key=f'market_card_{task["id"]}'):
-                task_summary(task, by_id[task['owner_id']]['name'], lang)
+                view = views[task['id']]
+                task_summary(task, by_id[task['owner_id']]['name'], lang, display_card=view.card)
+                translation_notice(view, task['card'], lang)
                 st.button(
                     tr(lang, 'open_apply' if role == 'team' else 'open_task') + ' →',
                     key=f'open_task_{task["id"]}', use_container_width=True,
@@ -293,16 +314,19 @@ def catalogue_detail(task: dict, role: str, person: int) -> None:
     lang = st.session_state['lang']
     st.button('← ' + tr(lang, 'back_catalog'), key='back_catalog',
               on_click=navigate, args=('catalog',))
+    view = card_views([task])[task['id']]
     main, side = st.columns([1.4, 1], gap='large')
     with main:
         with st.container(border=True):
-            task_summary(task, by_id[task['owner_id']]['name'], lang, compact=False)
+            task_summary(task, by_id[task['owner_id']]['name'], lang,
+                         compact=False, display_card=view.card)
+            translation_notice(view, task['card'], lang)
         if task['score'] >= 90:
             st.caption(tr(lang, 'priority_task'))
         elif task['score'] < 40:
             st.caption(tr(lang, 'needs_clarification'))
         with st.expander(tr(lang, 'task_details'), expanded=True):
-            details(task)
+            details(task, view.card)
     with side:
         if role == 'team':
             st.subheader(tr(lang, 'submit_proposal'))
@@ -326,7 +350,8 @@ def constructor(person: int) -> None:
     lang = st.session_state['lang']
     owned = db.tasks(owner_id=person)
     ids = [0] + [t['id'] for t in owned]
-    names = {t['id']: t['card'].get('title') or t['original'][:65] for t in owned}
+    title_views = card_views(owned, fields=('title',))
+    names = {t['id']: title_views[t['id']].card.get('title') or t['original'][:65] for t in owned}
 
     if 'pending_editor' in st.session_state:
         st.session_state['editor_task'] = st.session_state.pop('pending_editor')
@@ -339,6 +364,7 @@ def constructor(person: int) -> None:
         format_func=lambda i: tr(lang, 'new_task') if i == 0 else f"#{i} · {names[i]}",
         key='editor_task',
     )
+    translation_list_notice(title_views, lang)
 
     if not selected:
         with st.form('new_task'):
@@ -377,6 +403,16 @@ def constructor(person: int) -> None:
 
     with st.expander(tr(lang, 'original_need')):
         st.write(task['original'])
+
+    # Only this read-only preview receives a translated copy. Editable values,
+    # confirmation, persistence, and scoring below always use the original card.
+    view = card_views([task])[task['id']]
+    st.caption(tr(lang, 'editor_original_notice'))
+    if not st.session_state.get('show_original_content', False):
+        with st.expander(tr(lang, 'translated_preview')):
+            st.subheader(view.card.get('title') or tr(lang, 'need_clarify'))
+            translation_notice(view, task['card'], lang, show_original=False)
+            details(task, view.card)
 
     if not task['published']:
         questions = task['questions'] or local_interview(task['original'], task['theme'], lang)['questions']
@@ -496,6 +532,7 @@ def business_dashboard(person: int) -> None:
         return
 
     choices = {t['id']: t for t in owned}
+    views = card_views(owned, fields=('title',))
     if st.session_state.get('dashboard_task') not in choices:
         st.session_state['dashboard_task'] = owned[0]['id']
     with st.container(key='dashboard_overview'):
@@ -506,12 +543,14 @@ def business_dashboard(person: int) -> None:
                 pub_label = tr(lang, 'published' if item['published'] else 'unpublished')
                 info.markdown(
                     '<div class="tu-dashboard-task">'
-                    f'<h3>{escape(item["card"].get("title") or tr(lang, "need_clarify"))}</h3>'
+                    f'<h3>{escape(views[item["id"]].card.get("title") or tr(lang, "need_clarify"))}</h3>'
                     f'<div class="tu-dashboard-meta"><span>#{item["id"]} · {escape(pub_label)}</span>'
                     f'<span>{item["score"]}/100</span>{readiness_badge(lang, item["score"])}'
                     f'<span>{tr(lang, "incoming_proposals")}: {count}</span></div></div>',
                     unsafe_allow_html=True,
                 )
+                with info:
+                    translation_notice(views[item['id']], item['card'], lang)
                 action.button(tr(lang, 'manage_task'), key=f'manage_{item["id"]}',
                               use_container_width=True, on_click=select_dashboard_task, args=(item['id'],))
                 action.button(tr(lang, 'edit_task'), key=f'edit_{item["id"]}',
@@ -520,9 +559,10 @@ def business_dashboard(person: int) -> None:
     task_id = st.selectbox(
         tr(lang, 'dashboard_task_label'),
         list(choices),
-        format_func=lambda i: f"#{i} · {choices[i]['card'].get('title') or tr(lang, 'need_clarify')}",
+        format_func=lambda i: f"#{i} · {views[i].card.get('title') or tr(lang, 'need_clarify')}",
         key='dashboard_task',
     )
+    translation_list_notice(views, lang)
     task = choices[task_id]
     st.caption(
         f"{task['score']}/100 · {level_label(lang, level(task['score']))} · "
@@ -617,10 +657,13 @@ def team_dashboard(person: int) -> None:
     if not props:
         st.info(tr(lang, 'find_task'))
 
+    tasks = {prop['task_id']: db.task(prop['task_id']) for prop in props}
+    views = card_views(tasks.values(), fields=('title',))
     for prop in props:
-        task = db.task(prop['task_id'])
+        task = tasks[prop['task_id']]
         with st.container(border=True):
-            st.subheader(task['card'].get('title') or tr(lang, 'need_clarify'))
+            st.subheader(views[task['id']].card.get('title') or tr(lang, 'need_clarify'))
+            translation_notice(views[task['id']], task['card'], lang)
             st.write(status_label(lang, prop['status']))
             st.write(prop['idea'])
             st.write(prop['plan'])
@@ -702,6 +745,7 @@ def app_shell() -> None:
             format_func=lambda i: by_id[i]['name'], key=profile_key,
         )
         choose_language('sidebar_language')
+        st.checkbox(tr(lang, 'show_original'), key='show_original_content')
         st.caption(tr(lang, 'demo_notice'))
         st.divider()
         st.caption(tr(lang, 'principle'))
