@@ -49,6 +49,14 @@ The UI supports:
 
 The user chooses a language on the landing screen and may switch it later from the sidebar. New AI/fallback clarification questions follow the selected interface language.
 
+### Content translation
+
+When an OpenAI API key is configured, TaskUp automatically translates task-card content into the selected interface language (Kazakh, Russian or English). The translated fields are `title`, `context`, `need`, `data`, `access`, `result`, `success`, `constraints`, `users`, `interaction`, and `feedback`; `contact`, company/team names, proposals and milestone descriptions stay original. It translates the fields used by the current page (including the editor's read-only preview), rather than the entire database. Catalogue search matches both original content and translated titles/results. The sidebar's **Show original** control and each translated card's original-text section keep the source accessible. Task editing always uses the original text; translation never replaces saved cards or input to the readiness score.
+
+Translation uses the existing `OPENAI_API_KEY` and `OPENAI_MODEL` settings (`gpt-4.1-mini` by default). Text is sent to the external API with protected spans replaced by placeholders when no cached translation is available. Successful translations are stored separately as JSON under `.cache/translations/`; set `TASKUP_TRANSLATION_CACHE_DIR` to use another folder. Cache entries depend on the source text, target language, model, translation prompt, and applicable protected names. The cache is excluded from Git. After stopping the app, the cache folder can be removed to force fresh translations on restart. It does not change the SQLite database.
+
+Without a key, or if the API, response validation, or translation fails, TaskUp displays the original with a translation-unavailable notice. Translation instructions require preservation of meaning and names; validation checks protected tokens such as known company/team names, URLs, contacts, and technology names. These safeguards cannot mathematically guarantee semantic fidelity or preserve every arbitrary proper noun. The original remains available for comparison. Translation tests mock the API and do not require real API calls.
+
 ## Roles
 
 The first screen requires a demo role choice:
@@ -145,10 +153,13 @@ The database files under `data/` are excluded from Git.
 ```text
 app.py                 Streamlit UI and navigation
 ai_service.py          AI interview, schema validation, fallback
+translation_service.py Display-only translation and separate JSON cache
 database.py            SQLite persistence and state transitions
 scoring.py             Deterministic 0–100 readiness score
 seed_data.py           Synthetic demo data
 i18n.py                RU / KZ / EN interface text
+ui.py                  Escaped HTML presentation helpers
+assets/taskup.css      TaskUp visual theme and responsive layout
 tests/                  Core logic tests
 .streamlit/config.toml  Streamlit theme
 ```

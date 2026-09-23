@@ -22,6 +22,7 @@ class UIFlowTests(unittest.TestCase):
         self.database = Path(temporary.name) / 'test.db'
         environment = patch.dict(os.environ, {
             'TASKUP_DB': str(self.database), 'OPENAI_API_KEY': '',
+            'TASKUP_TRANSLATION_CACHE_DIR': str(Path(temporary.name) / 'translations'),
         })
         environment.start()
         self.addCleanup(environment.stop)
@@ -29,6 +30,9 @@ class UIFlowTests(unittest.TestCase):
         provider = patch('ai_service.urlopen', side_effect=AssertionError('Unexpected network request'))
         provider.start()
         self.addCleanup(provider.stop)
+        translator = patch('translation_service.urlopen', side_effect=TimeoutError('Offline UI test'))
+        translator.start()
+        self.addCleanup(translator.stop)
         self.app = AppTest.from_file(str(ROOT / 'app.py'), default_timeout=20).run()
         self.assert_healthy()
 
